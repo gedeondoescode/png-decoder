@@ -1,0 +1,7 @@
+# Hide all images 
+*.png
+*.avif
+
+# Zig 
+zig-out
+.zig-cache
