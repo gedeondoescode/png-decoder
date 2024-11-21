@@ -29,13 +29,64 @@ fn isPng(data: []const u8) bool {
     return sig_value == data_value;
 }
 
+// convert all struct fields into native endian from Big Endian
+fn toNativeStructEndian(t: anytype) @TypeOf(t) {
+    switch (@typeInfo(@TypeOf(t))) {
+        .@"struct" => |st| {
+            var result: @TypeOf(t) = undefined;
+            inline for (st.fields) |field| {
+                @field(result, field.name) = toNativeStructEndian(@field(t, field.name));
+            }
+            return result;
+        },
+        .int => {
+            return std.mem.bigToNative(@TypeOf(t), t);
+        },
+        else => @compileError("Can't handle endian swap of" ++ @typeName(t)),
+    }
+}
+
 // define the chunk layout
 const ChunkLayout = struct {
     length: usize,
     type: []const u8,
     data: []const u8,
     crc: []const u8,
+
+    fn isCritical(self: ChunkLayout) bool {
+        return std.ascii.isUpper(self.type[0]);
+    }
+
+    fn parsedHeader(self: ChunkLayout) ChunkData {
+        const getParsedType = std.meta.stringToEnum(ChunkType, self.type) orelse return .{ .unknown = self.data };
+
+        switch (getParsedType) {
+            .IHDR => {
+                return .{ .IHDR = toNativeStructEndian(std.mem.bytesToValue(IHDR, self.data)) };
+            },
+            .unknown => {
+                return .{ .unknown = self.data };
+            },
+        }
+    }
 };
+
+const IHDR = packed struct {
+    width: u32,
+    height: u32,
+    bit_depth: u8,
+    color_type: u8,
+    compression_method: u8,
+    filter_method: u8,
+    interlace_method: u8,
+};
+
+const ChunkType = enum {
+    IHDR,
+    unknown,
+};
+
+const ChunkData = union(ChunkType) { IHDR: IHDR, unknown: []const u8 };
 
 const PngDecoder = struct {
     data: []const u8,
@@ -92,6 +143,14 @@ pub fn main() !void {
     var decoder = try PngDecoder.init(data);
 
     while (try decoder.nextChunk()) |chunk| {
-        std.debug.print("Chunk Type: {s}\nChunk Length: {}\n", .{ chunk.type, chunk.length });
+        if (chunk.isCritical()) {
+            std.debug.print("Chunk Type: {s}\nChunk Length: {}\n", .{ chunk.type, chunk.length });
+            switch (chunk.parsedHeader()) {
+                .IHDR => |d| {
+                    std.debug.print("Header: {}\n", .{d});
+                },
+                .unknown => {},
+            }
+        }
     }
 }
